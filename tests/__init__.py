@@ -1,1 +1,0 @@
-"""User-login automation tests."""
