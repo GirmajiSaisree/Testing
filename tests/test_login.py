@@ -30,7 +30,7 @@ def assert_dashboard(page):
     assert is_dashboard(page)
 
 
-def assert_error_message(page):
+def assert_login_error(page):
     error = page.locator(ERROR)
     assert error.is_visible()
     assert error.inner_text().strip()
@@ -45,82 +45,26 @@ def field_has_validation_message(page, selector):
 
 @pytest.fixture(scope="session")
 def valid_username():
-    value = os.getenv("LOGIN_VALID_USERNAME")
-    if not value:
-        pytest.fail("LOGIN_VALID_USERNAME is required")
-    return value
+    return os.getenv("LOGIN_VALID_USERNAME", "valid_user")
 
 
 @pytest.fixture(scope="session")
 def valid_password():
-    value = os.getenv("LOGIN_VALID_PASSWORD")
-    if not value:
-        pytest.fail("LOGIN_VALID_PASSWORD is required")
-    return value
+    return os.getenv("LOGIN_VALID_PASSWORD", "ValidPassword123")
 
 
 @pytest.fixture(scope="session")
 def invalid_username():
-    return os.getenv("LOGIN_INVALID_USERNAME", "invalid-user@example.test")
+    return os.getenv("LOGIN_INVALID_USERNAME", "invalid_user")
 
 
 @pytest.fixture(scope="session")
 def invalid_password():
-    return os.getenv("LOGIN_INVALID_PASSWORD", "definitely-not-a-valid-password")
-
-
-@pytest.mark.functional
-def test_LOGIN_TC_001_login_succeeds_with_valid_credentials(
-    login_page, valid_username, valid_password
-):
-    submit_login(login_page, valid_username, valid_password)
-    assert_dashboard(login_page)
-
-
-@pytest.mark.negative
-@pytest.mark.parametrize("invalid_credential", ["username", "password"])
-def test_LOGIN_TC_002_invalid_credentials_are_rejected(
-    login_page,
-    valid_username,
-    valid_password,
-    invalid_username,
-    invalid_password,
-    invalid_credential,
-):
-    username = invalid_username if invalid_credential == "username" else valid_username
-    password = invalid_password if invalid_credential == "password" else valid_password
-    submit_login(login_page, username, password)
-    assert not is_dashboard(login_page)
-    assert_error_message(login_page)
-
-
-@pytest.mark.validation
-@pytest.mark.negative
-@pytest.mark.parametrize(
-    ("username", "password", "empty_fields"),
-    [("", "valid", [USERNAME]), ("valid", "", [PASSWORD]), ("", "", [USERNAME, PASSWORD])],
-)
-def test_LOGIN_TC_003_empty_mandatory_fields_show_validation_messages(
-    login_page, valid_username, valid_password, username, password, empty_fields
-):
-    login_page.locator(USERNAME).fill(valid_username if username == "valid" else "")
-    login_page.locator(PASSWORD).fill(valid_password if password == "valid" else "")
-    login_page.locator(SUBMIT).click()
-
-    assert not is_dashboard(login_page)
-    for selector in empty_fields:
-        assert field_has_validation_message(login_page, selector)
-
-
-@pytest.mark.functional
-def test_LOGIN_TC_004_password_is_masked_while_entering(login_page):
-    password = login_page.locator(PASSWORD)
-    password.fill("not-a-real-password")
-    assert password.get_attribute("type") == "password"
+    return os.getenv("LOGIN_INVALID_PASSWORD", "InvalidPassword123")
 
 
 @pytest.mark.api
-def test_LOGIN_TC_005_valid_login_uses_authentication_api(
+def test_LOGIN_TC_001_valid_credentials_are_sent_to_api_and_redirect_to_dashboard(
     login_page, valid_username, valid_password
 ):
     with login_page.expect_request(
@@ -135,6 +79,63 @@ def test_LOGIN_TC_005_valid_login_uses_authentication_api(
     assert_dashboard(login_page)
 
 
+@pytest.mark.negative
+@pytest.mark.api
+@pytest.mark.parametrize("invalid_credential", ["username", "password"])
+def test_LOGIN_TC_002_invalid_credentials_are_rejected(
+    login_page,
+    valid_username,
+    valid_password,
+    invalid_username,
+    invalid_password,
+    invalid_credential,
+):
+    username = invalid_username if invalid_credential == "username" else valid_username
+    password = invalid_password if invalid_credential == "password" else valid_password
+    submit_login(login_page, username, password)
+
+    assert not is_dashboard(login_page)
+    assert_login_error(login_page)
+
+
+@pytest.mark.negative
+@pytest.mark.validation
+def test_LOGIN_TC_003_both_empty_fields_show_validation_messages(login_page):
+    login_page.locator(USERNAME).fill("")
+    login_page.locator(PASSWORD).fill("")
+    login_page.locator(SUBMIT).click()
+
+    assert field_has_validation_message(login_page, USERNAME)
+    assert field_has_validation_message(login_page, PASSWORD)
+    assert not is_dashboard(login_page)
+
+
+@pytest.mark.negative
+@pytest.mark.validation
+@pytest.mark.parametrize(
+    ("username", "password", "empty_field"),
+    [("", "ValidPassword123", USERNAME), ("valid_user", "", PASSWORD)],
+)
+def test_LOGIN_TC_004_one_empty_mandatory_field_shows_validation_message(
+    login_page, username, password, empty_field
+):
+    login_page.locator(USERNAME).fill(username)
+    login_page.locator(PASSWORD).fill(password)
+    login_page.locator(SUBMIT).click()
+
+    assert field_has_validation_message(login_page, empty_field)
+    assert not is_dashboard(login_page)
+
+
+@pytest.mark.functional
+def test_LOGIN_TC_005_password_is_masked_while_entering(login_page):
+    password = login_page.locator(PASSWORD)
+    password.fill("ValidPassword123")
+
+    assert password.get_attribute("type") == "password"
+    assert password.input_value() == "ValidPassword123"
+
+
 @pytest.mark.functional
 def test_LOGIN_TC_006_dashboard_session_survives_refresh(
     login_page, valid_username, valid_password
@@ -142,6 +143,30 @@ def test_LOGIN_TC_006_dashboard_session_survives_refresh(
     submit_login(login_page, valid_username, valid_password)
     assert_dashboard(login_page)
     dashboard_url = login_page.url
+
     login_page.reload(wait_until="networkidle")
+
     assert login_page.url == dashboard_url
     assert is_dashboard(login_page)
+
+
+@pytest.mark.negative
+@pytest.mark.api
+def test_LOGIN_TC_007_backend_rejection_does_not_authenticate(
+    login_page, valid_username, invalid_password
+):
+    login_url = login_page.url
+
+    def reject_login(route):
+        route.fulfill(
+            status=401,
+            content_type="application/json",
+            body='{"message":"Invalid username or password"}',
+        )
+
+    login_page.route(f"**{AUTH_API_PATH}", reject_login)
+    submit_login(login_page, valid_username, invalid_password)
+
+    assert not is_dashboard(login_page)
+    assert_login_error(login_page)
+    assert login_page.url == login_url
